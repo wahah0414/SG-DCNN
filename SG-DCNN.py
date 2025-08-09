@@ -16,7 +16,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import warnings
 
-# 精确过滤torch.load的FutureWarning
+
 warnings.filterwarnings(
     'ignore',
     message="You are using `torch.load` with `weights_only=False`",
@@ -25,7 +25,7 @@ warnings.filterwarnings(
 )
 
 
-# ================== 自注意力模块 ==================
+# ================== Self-Attention ==================
 class SelfAttentionModule(nn.Module):
     def __init__(self, embed_size, heads=8):
         super(SelfAttentionModule, self).__init__()
@@ -58,7 +58,7 @@ class SelfAttentionModule(nn.Module):
         return self.fc_out(out)
 
 
-# ================== 动态CNN模型（支持动态隐藏层） ==================
+# ================== DCNN ==================
 class DynamicCNN(nn.Module):
     def __init__(self, input_features, conv_config, attention_heads, num_hidden_layers):
         super(DynamicCNN, self).__init__()
@@ -82,21 +82,21 @@ class DynamicCNN(nn.Module):
     def _build_classifier(self, input_features, conv_config, heads, num_hidden_layers):
         with torch.no_grad():
             dummy = torch.randn(1, 1, input_features)
-            conv_out = self.features(dummy).view(1, -1).shape[1]  # 卷积输出展平后的维度
+            conv_out = self.features(dummy).view(1, -1).shape[1]
 
-        # 分类器构建流程优化
+        # Classifier construction
         classifier_layers = [
             nn.Flatten(),
-            nn.Linear(conv_out, 64),  # 从卷积输出到64维
+            nn.Linear(conv_out, 64),
             nn.ReLU(),
             nn.Dropout(0.4),
-            nn.Unflatten(1, (1, 64)),  # 恢复为序列形式以便注意力模块处理
+            nn.Unflatten(1, (1, 64)),
             SelfAttentionModule(embed_size=64, heads=heads),
-            nn.Flatten()  # 注意力输出展平为64维
+            nn.Flatten()
         ]
-        last_hidden_size = 64  # 注意力模块输出维度
+        last_hidden_size = 64
 
-        hidden_sizes = [32, 16, 8]  # 隐藏层单元数，对应1-3层
+        hidden_sizes = [32, 16, 8]
         for i in range(num_hidden_layers):
             current_size = hidden_sizes[i]
             classifier_layers.extend([
@@ -104,9 +104,9 @@ class DynamicCNN(nn.Module):
                 nn.ReLU(),
                 nn.Dropout(0.2 if i < num_hidden_layers - 1 else 0.1)
             ])
-            last_hidden_size = current_size  # 更新当前隐藏层大小
+            last_hidden_size = current_size
 
-        # 输出层使用当前最后隐藏层大小或初始64维（无隐藏层时）
+
         classifier_layers.append(nn.Linear(last_hidden_size, 2))
         return nn.Sequential(*classifier_layers)
 
@@ -115,15 +115,15 @@ class DynamicCNN(nn.Module):
         return self.classifier(x)
 
 
-# ================== 五交叉验证评估 ==================
+# ================== 5 Cross-validation ==================
 def kfold_evaluate(train_path, param_config, k=5, device=None):
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     try:
         df = pd.read_csv(train_path)
         X = df.iloc[:, :-1].values.astype(np.float32).reshape(-1, 1, df.shape[1] - 1)
-        y = df.iloc[:, -1].values  # 先获取原始标签
-        le = LabelEncoder()  # 初始化编码器
-        y_encoded = le.fit_transform(y)  # 在整个训练集上拟合
+        y = df.iloc[:, -1].values
+        le = LabelEncoder()
+        y_encoded = le.fit_transform(y)
         dataset = TensorDataset(torch.tensor(X), torch.tensor(y_encoded))
     except Exception as e:
         print(f"数据加载失败: {str(e)}")
@@ -168,7 +168,7 @@ def kfold_evaluate(train_path, param_config, k=5, device=None):
                 best_loss = val_loss
                 torch.save(model.state_dict(), f"fold_{fold}_best_model.pth")
 
-        # 加载最佳模型
+        # Load the best model
         try:
             model.load_state_dict(torch.load(f"fold_{fold}_best_model.pth", map_location=device, weights_only=True),
                                   strict=True)
@@ -187,7 +187,7 @@ def kfold_evaluate(train_path, param_config, k=5, device=None):
     return avg_metrics
 
 
-# ================== 独立检验评估函数（含SP） ==================
+# ================== Evaluation index ==================
 def evaluate_on_holdout(model, holdout_loader, device, classes=None):
     model.eval()
     all_probas = []
@@ -197,9 +197,9 @@ def evaluate_on_holdout(model, holdout_loader, device, classes=None):
         for inputs, labels_batch in holdout_loader:
             inputs = inputs.to(device)
             outputs = model(inputs)
-            probas = torch.softmax(outputs, 1).cpu().numpy()  # 获取所有类别的概率
+            probas = torch.softmax(outputs, 1).cpu().numpy()
             preds = torch.argmax(outputs, dim=1).cpu().numpy()
-            all_probas.extend(probas[:, 1] if len(classes) == 2 else probas)  # 二分类取正类概率
+            all_probas.extend(probas[:, 1] if len(classes) == 2 else probas)
             all_preds.extend(preds)
             all_labels.extend(labels_batch.cpu().numpy())
 
@@ -209,22 +209,22 @@ def evaluate_on_holdout(model, holdout_loader, device, classes=None):
     specificity = TN / (TN + FP) if (TN + FP) != 0 else 0.0
     mcc = matthews_corrcoef(all_labels, all_preds)
 
-    # 处理二分类和多分类的AUC计算
+
     if len(classes) == 2:
         auc = roc_auc_score(all_labels, all_probas)  # 二分类直接使用
     else:
-        # 多分类情况，使用ovr策略
+
         auc = roc_auc_score(all_labels, all_probas, multi_class='ovr', average='macro')
 
     return {'auc': auc, 'mcc': mcc, 'sn': sensitivity, 'sp': specificity}
 
 
-# ================== 训练和评估（支持五交叉和独立检验） ==================
+# ================== Training and evaluation ==================
 def train_and_evaluate(train_path, holdout_path, output_dir, param_config,
                        batch_size=16, patience=3, device=None):
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # 加载训练数据并统一编码
+    # Load the training data
     train_df = pd.read_csv(train_path)
     X_train = train_df.iloc[:, :-1].values.astype(np.float32).reshape(-1, 1, train_df.shape[1] - 1)
     y_train = train_df.iloc[:, -1].values
@@ -233,23 +233,23 @@ def train_and_evaluate(train_path, holdout_path, output_dir, param_config,
     full_train_dataset = TensorDataset(torch.tensor(X_train), torch.tensor(y_train_encoded))
     full_train_loader = DataLoader(full_train_dataset, batch_size=batch_size, shuffle=True)
 
-    # 五交叉验证
+    # 5 Cross-validation
     kfold_metrics = kfold_evaluate(train_path, param_config, k=5, device=device)
     if not kfold_metrics:
         return None
 
-    # 加载独立检验数据并使用训练集编码器转换
+    # Load the independent test data and convert it using the training set encoder
     try:
         holdout_df = pd.read_csv(holdout_path)
         X_holdout = holdout_df.iloc[:, :-1].values.astype(np.float32).reshape(-1, 1, holdout_df.shape[1] - 1)
-        y_holdout = le.transform(holdout_df.iloc[:, -1].values)  # 使用训练集的编码器转换
+        y_holdout = le.transform(holdout_df.iloc[:, -1].values)  # Encoder conversion using the training set
         holdout_dataset = TensorDataset(torch.tensor(X_holdout), torch.tensor(y_holdout))
         holdout_loader = DataLoader(holdout_dataset, batch_size=batch_size, shuffle=False)
     except Exception as e:
-        print(f"独立检验数据加载失败: {str(e)}")
+        print(f"The independent test data loading failed: {str(e)}")
         return None
 
-    # 重新训练模型
+    # Retrain the model
     input_features = X_holdout.shape[2]
     model = DynamicCNN(
         input_features,
@@ -280,14 +280,14 @@ def train_and_evaluate(train_path, holdout_path, output_dir, param_config,
             best_loss = val_loss
             torch.save(model.state_dict(), os.path.join(output_dir, 'best_model.pth'))
 
-    # 加载最佳模型
+    # Load the best model
     try:
         model.load_state_dict(
             torch.load(os.path.join(output_dir, 'best_model.pth'), map_location=device, weights_only=True), strict=True)
     except TypeError:
         model.load_state_dict(torch.load(os.path.join(output_dir, 'best_model.pth'), map_location=device), strict=True)
 
-    # 计算独立检验指标，传递类别信息
+    # Calculate the independent test indicators
     independent_metrics = evaluate_on_holdout(model, holdout_loader, device, le.classes_)
 
     return {
@@ -303,9 +303,9 @@ def train_and_evaluate(train_path, holdout_path, output_dir, param_config,
     }
 
 
-# ================== 参数搜索（含隐藏层，五交叉+独立检验） ==================
+# ================== Parameter search ==================
 def random_search(param_space, train_path, holdout_path, num_trials=10):
-    # 添加默认卷积配置，避免空列表错误
+    # Add the default convolution configuration
     if not param_space.get('conv_configs'):
         param_space['conv_configs'] = [
             [{'filters': 64, 'kernel': 4, 'pool': 2, 'dropout': 0.4, 'padding': 'same'},
@@ -315,10 +315,10 @@ def random_search(param_space, train_path, holdout_path, num_trials=10):
              {'filters': 64, 'kernel': 3, 'pool': 2, 'dropout': 0.4, 'padding': 'same'},
              {'filters': 128, 'kernel': 2, 'pool': 2, 'dropout': 0.5, 'padding': 0}]
         ]
-        print("警告: 使用默认卷积配置，建议在param_space中显式定义conv_configs")
+        print("Warning: When using the default convolution configuration, it is recommended to explicitly define conv_configs in param_space")
 
     search_results = []
-    progress_bar = tqdm(range(num_trials), desc="参数搜索进度")
+    progress_bar = tqdm(range(num_trials), desc="Parameter search progress")
 
     for trial in progress_bar:
         params = {
@@ -326,7 +326,7 @@ def random_search(param_space, train_path, holdout_path, num_trials=10):
             'batch_size': random.choice([16, 32, 64]),
             'conv_config': random.choice(param_space['conv_configs']),
             'attention_heads': random.choice([4, 8]),
-            'num_hidden_layers': random.randint(1, 3),  # 1-3层隐藏层
+            'num_hidden_layers': random.randint(1, 3),
             'patience': random.choice([3, 5])
         }
 
@@ -351,35 +351,35 @@ def random_search(param_space, train_path, holdout_path, num_trials=10):
                 'auc': f"{metrics['auc']:.4f}"
             })
 
-        # 清理临时文件
+        # Clear temporary documents
         for f in os.listdir(temp_dir):
             file_path = os.path.join(temp_dir, f)
             if os.path.isfile(file_path):
                 os.remove(file_path)
         os.rmdir(temp_dir)
 
-    # 生成指定格式的DataFrame
+    # Generate a DataFrame in the specified format
     search_df = pd.DataFrame(search_results)
-    # 重新排列列顺序
+
     search_df = search_df[
         ['lr', 'batch_size', 'conv_config', 'attention_heads', 'num_hidden_layers', 'patience', 'auc', 'mcc', 'sn']]
-    # 保存为CSV文件
+    # Save as a CSV file
     csv_path = os.path.join(os.path.dirname(train_path), "search_results.csv")
     search_df.to_csv(csv_path, index=False)
-    print(f"结果已保存至: {csv_path}")
+    print(f"The result has been saved to: {csv_path}")
     return search_df
 
 
 # ================== 主执行与绘图（含隐藏层图形） ==================
 if __name__ == "__main__":
-    # 修改为实际数据路径
+
     train_path = "C:\\Users\\30321\\PycharmProjects\\pythonProject1\\数据集\\Po4-new.csv"
     holdout_path = "C:\\Users\\30321\\Desktop\\suangeng\\suan\\Po4\\Po4-du\\Po4-du.csv"
 
     output_root = os.path.join(os.path.dirname(train_path), "results")
     os.makedirs(output_root, exist_ok=True)
 
-    # 确保param_space包含卷积配置
+
     param_space = {
         'conv_configs': [
             [{'filters': 8, 'kernel': 4, 'pool': 2, 'dropout': 0.4, 'padding': 'same'},
@@ -393,10 +393,10 @@ if __name__ == "__main__":
 
     search_df = random_search(param_space, train_path, holdout_path, num_trials=10)
 
-    # 绘图：仅使用独立检验数据
+    # Drawing: Only use independent test data
     plt.figure(figsize=(20, 8))
 
-    # 子图1：Batch Size
+    # Batch Size
     plt.subplot(2, 2, 1)
     for bs in search_df['batch_size'].unique():
         subset = search_df[search_df['batch_size'] == bs]
@@ -408,7 +408,7 @@ if __name__ == "__main__":
     plt.title('Batch Size vs Metrics (Independent Test)')
     plt.legend()
 
-    # 子图2：学习率
+    # Learning Rate
     plt.subplot(2, 2, 2)
     plt.scatter(search_df['lr'], search_df['mcc'], c='b', marker='o', label='MCC')
     plt.scatter(search_df['lr'], search_df['sn'], c='r', marker='s', label='SN')
@@ -418,7 +418,7 @@ if __name__ == "__main__":
     plt.title('Learning Rate vs Metrics (Independent Test)')
     plt.legend()
 
-    # 子图3：隐藏层数目
+    # num_hidden_layers
     plt.subplot(2, 2, 3)
     for hl in search_df['num_hidden_layers'].unique():
         subset = search_df[search_df['num_hidden_layers'] == hl]
@@ -431,7 +431,7 @@ if __name__ == "__main__":
     plt.xticks([1, 2, 3])
     plt.legend()
 
-    # 子图4：注意力头数
+    # attention_heads
     plt.subplot(2, 2, 4)
     for ah in search_df['attention_heads'].unique():
         subset = search_df[search_df['attention_heads'] == ah]
@@ -449,10 +449,10 @@ if __name__ == "__main__":
     plt.savefig(plot_path, dpi=300)
     plt.close()
 
-    # 输出最佳结果（基于独立检验的MCC）
+    # Output the best result
     if not search_df.empty:
         best = search_df.sort_values('mcc', ascending=False).head(1)
-        print("最佳参数与独立检验指标：")
+        print("Optimal parameters and independent test indicators：")
         print(best[['num_hidden_layers', 'attention_heads', 'batch_size', 'lr', 'mcc', 'sn', 'auc']])
     else:
-        print("参数搜索未获得有效结果")
+        print("The parameter search did not yield valid results")
